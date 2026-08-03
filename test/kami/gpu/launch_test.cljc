@@ -1,0 +1,149 @@
+(ns kami.gpu.launch-test
+  (:require [clojure.test :refer [deftest is testing]]
+            [kami.gpu.launch :as l]
+            [machine.core :as m]))
+
+(def big
+  {:format m/format-id
+   :machine/id "gpu-big"
+   :machine/provenance :measured
+   :machine/source "test fixture"
+   :gpu {:kind :vulkan :max-workgroup 1024 :subgroup 32 :shared-bytes 49152}})
+
+(def small
+  (assoc big :machine/id "gpu-small"
+         :gpu {:kind :webgpu :max-workgroup 128 :subgroup 16 :shared-bytes 16384}))
+
+(deftest fixtures-are-valid
+  (is (m/valid? big))
+  (is (m/valid? small)))
+
+;; ── workgroup size ───────────────────────────────────────────────────────
+
+(deftest a-kernel-with-no-shared-memory-takes-the-device-maximum
+  (let [w (l/workgroup-size big {})]
+    (is (= 1024 (:size w)))
+    (is (= :device-maximum (:bound-by w)))
+    (is (= 32 (:subgroups w))))
+  (testing "and the same kernel is legal at 128 on a device that says 128 —
+            the constant 256 everyone writes down is illegal here"
+    (is (= 128 (:size (l/workgroup-size small {}))))))
+
+(deftest shared-memory-binds-when-the-kernel-needs-it
+  (testing "48 KiB and 64 bytes each: 768 invocations, floored to 512"
+    (let [w (l/workgroup-size big {:shared-bytes-per-invocation 64})]
+      (is (= 512 (:size w)))
+      (is (= :shared-memory (:bound-by w)))
+      (is (= 32768 (:shared-bytes-used w)))
+      (is (not (:over-shared-budget? w)))))
+  (testing "an absent shared budget is never reported as the binding reason"
+    (is (= :device-maximum (:bound-by (l/workgroup-size big {}))))))
+
+(deftest the-problem-can-be-smaller-than-a-workgroup
+  (let [w (l/workgroup-size big {:problem-size 100})]
+    (is (= 64 (:size w)))
+    (is (= :problem-size (:bound-by w)))))
+
+(deftest the-subgroup-is-a-floor-and-the-report-names-what-it-overrode
+  (testing "4 KiB each allows only 12 invocations in 48 KiB, which is under
+            the 32-lane subgroup, so the floor wins"
+    (let [w (l/workgroup-size big {:shared-bytes-per-invocation 4096})]
+      (is (= 32 (:size w)))
+      (is (= :subgroup-floor-over-shared-memory (:bound-by w)))
+      (testing "and it says out loud that the budget is now exceeded"
+        (is (:over-shared-budget? w))
+        (is (= 131072 (:shared-bytes-used w)))
+        (is (= 49152 (:shared-bytes-available w))))))
+  (testing "a problem smaller than one subgroup does the same"
+    (let [w (l/workgroup-size big {:problem-size 8})]
+      (is (= 32 (:size w)))
+      (is (= :subgroup-floor-over-problem-size (:bound-by w))))))
+
+(deftest a-machine-with-no-gpu-refuses-rather-than-guessing
+  (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
+               (l/workgroup-size m/unknown {}))))
+
+;; ── coalescing ───────────────────────────────────────────────────────────
+
+(deftest coalescing-is-a-fraction-not-a-verdict
+  (is (= 1.0 (:utilization (l/coalescing {:stride 1}))))
+  (is (:coalesced? (l/coalescing {:stride 1})))
+  (testing "stride 2 is not \"uncoalesced\", it is half of every transaction wasted"
+    (is (= 0.5 (:utilization (l/coalescing {:stride 2})))))
+  (testing "a column walk of a 32-wide row is a different order of problem,
+            and the number is what says so"
+    (is (= 0.03125 (:utilization (l/coalescing {:stride 32})))))
+  (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
+               (l/coalescing {:stride 0}))))
+
+;; ── swizzle ──────────────────────────────────────────────────────────────
+
+(deftest a-swizzle-covers-every-tile-exactly-once
+  (doseq [order [:row-major :morton :hilbert]
+          grid [[8 8] [5 3] [1 7]]]
+    (let [tiles (l/swizzled-tiles grid order)]
+      (is (= (* (first grid) (second grid)) (count tiles)) (str order " " grid))
+      (is (= (count tiles) (count (set tiles))) (str order " " grid)))))
+
+(deftest a-ragged-grid-walks-the-enclosing-square-and-drops-the-rest
+  (testing "which is why this returns a sequence, not an index formula:
+            position N is not tile N"
+    (let [tiles (l/swizzled-tiles [5 3] :morton)]
+      (is (= 15 (count tiles)))
+      (is (every? (fn [[x y]] (and (< x 5) (< y 3))) tiles)))))
+
+(deftest the-swizzle-is-justified-by-a-measurement
+  (let [rm (l/swizzle-locality [8 8] :row-major 8)
+        mo (l/swizzle-locality [8 8] :morton 8)]
+    (testing "row-major separates vertically adjacent tiles by a whole grid row"
+      (is (< (:same-block rm) (:same-block mo))))))
+
+;; ── reduction ────────────────────────────────────────────────────────────
+
+(deftest a-tree-reduction-takes-more-than-one-pass
+  (let [r (l/reduction-passes 1000000 256)]
+    (testing "1e6 -> 3907 -> 16 -> 1"
+      (is (= 3 (:passes r)))
+      (is (= 1 (:final-elements r)))))
+  (testing "the partials buffer is sized for the FIRST pass; sizing it for the
+            last is an overrun that reads as a correctness bug"
+    (is (= 3907 (:partials-buffer-elements (l/reduction-passes 1000000 256)))))
+  (testing "a problem that fits one workgroup still takes one pass"
+    (is (= 1 (:passes (l/reduction-passes 200 256))))))
+
+;; ── plan ─────────────────────────────────────────────────────────────────
+
+(deftest an-elementwise-plan
+  (let [p (l/plan big {:problem-size 1000000 :access {:stride 1 :element-bytes 4}})]
+    (is (= 1024 (get-in p [:workgroup :size])))
+    (is (= 977 (:workgroups p)))
+    (is (= 1.0 (get-in p [:coalescing :utilization])))
+    (is (nil? (:tiles p)))))
+
+(deftest a-tiled-2d-plan-carries-its-swizzle-and-what-it-bought
+  (let [p (l/plan big {:grid [1024 1024] :tile 128 :swizzle :morton
+                       :shared-bytes-per-invocation 32
+                       :access {:stride 1 :element-bytes 4}})]
+    (is (= [8 8] (:tile-grid p)))
+    (is (= 64 (count (:tiles p))))
+    (is (= :morton (:swizzle p)))
+    (is (< (get-in p [:swizzle-locality :row-major :same-block])
+           (get-in p [:swizzle-locality :chosen :same-block])))
+    (testing "1024 invocations at 32 bytes each would need 32 KiB — under 48,
+              so the device maximum still binds"
+      (is (= 1024 (get-in p [:workgroup :size])))
+      (is (= :device-maximum (get-in p [:workgroup :bound-by]))))))
+
+(deftest a-reduction-plan-reports-its-passes
+  (let [p (l/plan big {:problem-size 1000000 :reduction? true
+                       :shared-bytes-per-invocation 4})]
+    (testing "a 1024-wide workgroup gets there in two passes, not the three a
+              256-wide one needs — the pass count is a consequence of the
+              workgroup, not a constant"
+      (is (= 1024 (get-in p [:workgroup :size])))
+      (is (= 2 (get-in p [:reduction :passes])))
+      (is (= 977 (get-in p [:reduction :partials-buffer-elements]))))))
+
+(deftest planning-is-deterministic
+  (let [opts {:grid [512 512] :tile 64 :swizzle :hilbert}]
+    (is (= (l/plan big opts) (l/plan big opts)))))

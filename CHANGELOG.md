@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased — 2026-08-03
+
+### Added: `kami.gpu.launch` — launch geometry from the hardware descriptor
+
+`kami.gpu` owns the capability question (can this backend run this pass).
+`kami.gpu.launch` owns the shape question (given that it can, how should the
+dispatch be shaped), which the tier table cannot answer: a pass running at 8%
+of a device's bandwidth is still a pass the device can run.
+
+- `workgroup-size` derives the size from the device's own limits and reports
+  the binding constraint, including when the subgroup floor overrides a
+  smaller shared-memory or problem-size answer.
+- `coalescing` reports utilization rather than a boolean.
+- `swizzled-tiles` / `swizzle-locality` order a 2-D dispatch along a
+  space-filling curve, reusing `kotoba-lang/traversal` rather than growing a
+  second Morton implementation here, and carry the measured locality gain.
+- `reduction-passes` sizes the partials buffer for the first pass, not the
+  last.
+
+New dependencies: `kotoba-lang/machine`, `kotoba-lang/traversal`.
+CI no longer clones `webgpu`, `org-w3-webgpu` and `expr` — those siblings
+stopped being dependencies when `kami.gpu` moved here, and the workflow had
+been cloning them ever since.
+
 ## Unreleased — 2026-07-09
 
 ### Changed: `kotoba.gpu` is now a thin re-export of `kami.gpu` (kotoba-lang/webgpu)
