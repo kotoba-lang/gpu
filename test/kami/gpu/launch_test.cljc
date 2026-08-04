@@ -147,3 +147,56 @@
 (deftest planning-is-deterministic
   (let [opts {:grid [512 512] :tile 64 :swizzle :hilbert}]
     (is (= (l/plan big opts) (l/plan big opts)))))
+
+;; ── against a real device ────────────────────────────────────────────────
+;;
+;; Every other test here uses an invented descriptor. These use the limits a
+;; real Apple M1 Max reports through WebGPU (Deno -> wgpu -> Metal, captured
+;; 2026-08-04: maxComputeInvocationsPerWorkgroup 256, maxComputeWorkgroupSizeX
+;; 256, maxComputeWorkgroupStorageSize 16384). No browser and no timing, so
+;; they say the same thing on a loaded machine as on an idle one.
+;;
+;; They check that the planner's arithmetic agrees with hardware that exists.
+;; They do NOT check that its performance advice is right -- that needs a
+;; timing harness this does not have. Three attempts at one are recorded in
+;; ADR-2608030200; each was confounded differently and none is reported as a
+;; result.
+
+(def ^:private m1-max
+  {:format m/format-id
+   :machine/id "Apple M1 Max (WebGPU limits, measured)"
+   :machine/provenance :measured
+   :machine/source "Deno WebGPU -> wgpu -> Metal, 2026-08-04"
+   :gpu {:kind :webgpu :max-workgroup 256 :subgroup 32 :shared-bytes 16384}})
+
+(deftest a-real-device-descriptor-is-valid
+  (is (m/valid? m1-max)))
+
+(deftest workgroup-never-exceeds-what-the-real-device-accepts
+  (testing "the device rejects a workgroup over 256 invocations, so a plan
+            proposing one is not conservative advice, it is a dispatch that
+            fails"
+    (doseq [shared [0 4 16 64 256]]
+      (let [w (l/workgroup-size m1-max {:shared-bytes-per-invocation shared})]
+        (is (<= (:size w) 256) (str "shared=" shared))))))
+
+(deftest the-shared-budget-binds-where-the-real-device-says-it-should
+  (testing "16384 bytes of workgroup storage at 64 bytes each is exactly 256
+            invocations, the device maximum -- so at 64 the device bound wins
+            the tie and above it shared memory must take over"
+    (is (= :device-maximum
+           (:bound-by (l/workgroup-size m1-max {:shared-bytes-per-invocation 64}))))
+    (let [w (l/workgroup-size m1-max {:shared-bytes-per-invocation 128})]
+      (is (= :shared-memory (:bound-by w)))
+      (is (= 128 (:size w)))
+      (is (<= (:shared-bytes-used w) 16384)))))
+
+(deftest a-workgroup-is-never-narrower-than-the-real-subgroup
+  (testing "this GPU executes in SIMD groups of 32, so a workgroup of 8 would
+            waste three quarters of every group issued. The floor wins and the
+            report names what wanted it smaller -- and admits the budget is
+            blown rather than quietly returning a size that fits"
+    (let [w (l/workgroup-size m1-max {:shared-bytes-per-invocation 2048})]
+      (is (= 32 (:size w)))
+      (is (= :subgroup-floor-over-shared-memory (:bound-by w)))
+      (is (:over-shared-budget? w)))))
