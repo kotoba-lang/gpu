@@ -11,7 +11,7 @@
          :git/sha "e7235657c6f6bc4e43e7e6126c1c0912e8dbf5f4"}
         io.github.kotoba-lang/traversal
         {:git/url "https://github.com/kotoba-lang/traversal.git"
-         :git/sha "a04f066ec675728813017cf7ba20c4a089448b59"}}
+         :git/sha "792a339a575bc8cfb97ac6ac57a7969660360302"}}
  :aliases
  {:test {:extra-paths ["test"]
          :extra-deps {io.github.cognitect-labs/test-runner
