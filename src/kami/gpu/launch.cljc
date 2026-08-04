@@ -86,7 +86,27 @@
   Reported as a fraction rather than a verdict: `1.0` is fully coalesced,
   `0.5` is a stride-2 access throwing away half of every transaction, and
   `0.03` is a column walk of a 32-wide row. Which of those to fix first is
-  obvious from the numbers and invisible from a boolean."
+  obvious from the numbers and invisible from a boolean.
+
+  **Measured on an Apple M1 Max, this is pessimistic past about stride 2.**
+  A kernel reading the same addresses in every arm -- identical footprint,
+  identical load count, only the thread-to-address mapping permuted -- gave,
+  relative to stride 1:
+
+      stride     2      4      8     16     32
+      model   0.50   0.25   0.13   0.06   0.03
+      measured 0.57   0.65   0.39   0.19   0.13
+
+  The direction holds and the magnitude does not: at stride 32 the model
+  predicts 3% of peak and the hardware delivered 13%, so it over-states the
+  penalty about fourfold. Something between the coalescer and the cache
+  recovers part of what the model writes off.
+
+  The formula is unchanged, because that measurement carries roughly 20%
+  run-to-run spread and one noisy sweep is not a calibration -- and because
+  the error is in the safe direction for a planner deciding whether to fix a
+  strided access. Use it to rank access patterns, which is what it is for; do
+  not use it to predict a speedup."
   [{:keys [stride element-bytes] :or {stride 1 element-bytes 4}}]
   (when-not (and (pos-int? stride) (pos-int? element-bytes))
     (throw (ex-info "coalescing needs a positive stride and element size"
