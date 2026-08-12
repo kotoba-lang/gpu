@@ -3,7 +3,17 @@
 **SSoT for `kami.gpu`** — capability-gated GPU pipeline IR (render-graph resolve per
 backend tier: WebGPU / WebGL2 / native / console). Pure `.cljc`; no browser executor.
 
-`kotoba.gpu` is a thin facade for historical consumers.
+`kotoba.gpu` is NOT a facade. It owns the implementation, and the file says so:
+re-exporting `kami.gpu` would make this contract's meaning depend on classpath
+order, because `kami-engine-sdk` ships a different `kami.gpu` — a backend
+protocol (`IGpuBackend`, `submit!`, `ensure-assets!`) with no function name in
+common with the capability/render-graph IR here.
+
+That duplication is deliberate and is the cheapest thing that works today; it
+is not an end state. The collision it routes around is recorded in
+ADR-2608120600 (com-junkawasaki/root), which counts `kami/gpu.cljc` among the
+namespaces two repos ship with different content onto one classpath. Which
+`kami.gpu` is canonical is an owner decision that has not been made.
 
 See ADR-2607102200 addendum 6.
 
