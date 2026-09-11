@@ -62,5 +62,5 @@ ADR-2608030200 in the superproject.
 ## Test
 
 ```sh
-clojure -M:test
+kbb -M:test
 ```
