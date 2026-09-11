@@ -30,7 +30,7 @@ been cloning them ever since.
 
 **Why.** Like `kotoba-lang/sprite-gpu` and `kotoba-lang/webgl`, this repo's `kotoba.gpu` traces back
 to the same abandoned 2026-07-02 "clj-wgsl Phase-4" split-migration as `kotoba-lang/webgpu`'s
-internal `src/kami/gpu.cljc`, and the two copies diverged silently after independent "restore"
+internal `src/kami/gpu.cljk`, and the two copies diverged silently after independent "restore"
 commits.
 
 Diffing the two (normalizing `kotoba.*` → `kami.*`) found **no functional bug** on either side —
@@ -48,7 +48,7 @@ consumers were other `kotoba-lang` scaffolding repos (`webgl`), which is being r
 
 **What changed.**
 - `deps.edn`: added `io.github.kotoba-lang/webgpu {:local/root "../webgpu"}`.
-- `src/kotoba/gpu.cljc`: replaced the duplicated implementation with a thin re-export of
+- `src/kotoba/gpu.cljk`: replaced the duplicated implementation with a thin re-export of
   `kami.gpu` — same public API (`caps-webgpu`, `caps-native`, `caps-console`, `caps-webgl2`,
   `tiers`, `missing-caps`, `pass-runnable?`, `resolve-graph`, `resolve-for`, `caps-from-device`,
   `requires`), so anything still requiring `kotoba.gpu` keeps working unmodified, but it can never
