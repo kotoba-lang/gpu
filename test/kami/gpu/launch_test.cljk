@@ -1,5 +1,5 @@
 (ns kami.gpu.launch-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [kotoba.test :refer [deftest is testing]]
             [kami.gpu.launch :as l]
             [machine.core :as m]))
 
